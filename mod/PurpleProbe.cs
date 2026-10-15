@@ -73,7 +73,7 @@ namespace CWIOS
             return $"rgb=({fr:0},{fg:0},{fb:0}) purple-vs-green={cast:+0;-0}";
         }
 
-        IEnumerator Capture(string label, string why, bool savePng, Action<Vector3> done = null)
+        IEnumerator Capture(string label, string why, bool savePng, Action<Vector3> done = null, Action<Texture2D> pixels = null)
         {
             yield return null;
             yield return null;
@@ -85,6 +85,7 @@ namespace CWIOS
             {
                 Log.Info($"  colour [{label}]: {Avg(t, out Vector3 mean)}");
                 done?.Invoke(mean);
+                pixels?.Invoke(t);
                 if (savePng)
                 {
                     int sw = t.width / 4, sh = t.height / 4;
@@ -137,24 +138,30 @@ namespace CWIOS
         {
             if (SceneManager.GetActiveScene().name == "") yield break;
             Log.Info($"colour ablation [{why}] (each line = that stage switched off for 2 frames):");
-            Vector3 normal = default, noPost = default, other = default;
-            yield return Capture($"normal (LUT flip {(LutFix.Flip ? "on" : "off")})", why, true, m => normal = m);
+            var shots = new Dictionary<LutFix.Mode, Color32[]>();
+            Color32[] noPost = null;
+            int sw = 0, sh = 0;
+            var start = LutFix.Current;
+            yield return Capture($"normal (LUT {start})", why, true, null, t => { shots[start] = t.GetPixels32(); sw = t.width; sh = t.height; });
 
             var cams = FindObjectsByType<UniversalAdditionalCameraData>(FindObjectsSortMode.None).Where(c => c.renderPostProcessing).ToList();
             foreach (var c in cams) c.renderPostProcessing = false;
-            yield return Capture("no-post-processing", why, true, m => noPost = m);
+            yield return Capture("no-post-processing", why, true, null, t => noPost = t.GetPixels32());
             foreach (var c in cams) if (c != null) c.renderPostProcessing = true;
 
-            // LUT orientation check: the right one keeps the hue of the no-post-processing image.
-            bool flip = LutFix.Flip;
-            LutFix.Set(!flip, false);
-            yield return Capture($"LUT flip {(!flip ? "on" : "off")}", why, true, m => other = m);
-            float dCur = HueError(normal, noPost), dOther = HueError(other, noPost);
-            bool bright = noPost.x + noPost.y + noPost.z > 60 && normal != default && other != default;
-            bool switchIt = bright && dOther + 0.02f < dCur;
-            LutFix.Set(switchIt ? !flip : flip, bright && Math.Abs(dOther - dCur) > 0.02f);
-            Log.Info($"  LUT orientation: flip {(flip ? "on" : "off")} hue error {dCur:0.000}, flip {(!flip ? "on" : "off")} hue error {dOther:0.000}" +
-                     (bright ? $" -> using flip {(LutFix.Flip ? "on" : "off")}" : " -> too dark to judge, unchanged"));
+            // LUT source check: GPU-built vs CPU-built (both row orders), each against the image predicted from the
+            // no-post-processing capture with URP's own maths (exposure -> tonemap -> CPU LUT).
+            LutFix.RequestCheck();
+            foreach (LutFix.Mode m in new[] { LutFix.Mode.Gpu, LutFix.Mode.Cpu, LutFix.Mode.CpuFlipped })
+            {
+                if (m == start) continue;
+                LutFix.Set(m, false);
+                for (int k = 0; k < 120 && !LutFix.UpToDate; k++) yield return null;
+                var mode = m;
+                yield return Capture($"LUT {m}", why, true, null, t => shots[mode] = t.GetPixels32());
+            }
+            LutFix.Set(start, false);
+            Safe("LUT judge", () => JudgeLut(shots, noPost, sw, sh));
 
             var feats = ActiveFeatures();
             foreach (var f in feats) f.SetActive(false);
@@ -182,12 +189,73 @@ namespace CWIOS
             Log.Info("colour ablation done");
         }
 
-        /// Distance between the chromaticities (r,g,b / sum) of two average colours.
-        static float HueError(Vector3 a, Vector3 b)
+        static float S2L(float c) { c /= 255f; return c <= 0.04045f ? c / 12.92f : Mathf.Pow((c + 0.055f) / 1.055f, 2.4f); }
+        static float L2S(float c) { c = Mathf.Clamp01(c); return 255f * (c <= 0.0031308f ? c * 12.92f : 1.055f * Mathf.Pow(c, 1f / 2.4f) - 0.055f); }
+
+        static float Neutral(float x)
         {
-            float sa = a.x + a.y + a.z, sb = b.x + b.y + b.z;
-            if (sa < 1 || sb < 1) return 1;
-            return (a / sa - b / sb).magnitude;
+            const float a = 0.2f, b = 0.29f, c = 0.24f, d = 0.272f, e = 0.02f, f = 0.3f;
+            float Curve(float v) => ((v * (a * v + c * b) + d * e) / (v * (a * v + b) + d * f)) - e / f;
+            float ws = 1f / Curve(5.3f);
+            return Curve(x * ws) * ws;
+        }
+
+        static float Aces(float x) { x *= 0.6f; return Mathf.Clamp01(x * (2.51f * x + 0.03f) / (x * (2.43f * x + 0.59f) + 0.14f)); }
+
+        /// Trilinear lookup in LutFix.Table (linear in, linear out), like the LDR uber shader does.
+        static Vector3 Lut(float[] t, int n, Vector3 c)
+        {
+            float fr = Mathf.Clamp01(c.x) * (n - 1), fg = Mathf.Clamp01(c.y) * (n - 1), fb = Mathf.Clamp01(c.z) * (n - 1);
+            int r0 = Mathf.Min((int)fr, n - 2), g0 = Mathf.Min((int)fg, n - 2), b0 = Mathf.Min((int)fb, n - 2);
+            float dr = fr - r0, dg = fg - g0, db = fb - b0;
+            Vector3 At(int r, int g, int b) { int o = ((b * n + g) * n + r) * 3; return new Vector3(t[o], t[o + 1], t[o + 2]); }
+            Vector3 L(int b)
+            {
+                var c0 = Vector3.Lerp(At(r0, g0, b), At(r0 + 1, g0, b), dr);
+                var c1 = Vector3.Lerp(At(r0, g0 + 1, b), At(r0 + 1, g0 + 1, b), dr);
+                return Vector3.Lerp(c0, c1, dg);
+            }
+            return Vector3.Lerp(L(b0), L(b0 + 1), db);
+        }
+
+        static void JudgeLut(Dictionary<LutFix.Mode, Color32[]> shots, Color32[] noPost, int w, int h)
+        {
+            var table = LutFix.Table; int n = LutFix.TableSize;
+            if (table == null || noPost == null || noPost.Length != w * h) { Log.Info("  LUT judge: no CPU table or no-post image yet, skipped"); return; }
+            var stack = VolumeManager.instance.stack;
+            var ca = stack.GetComponent<ColorAdjustments>();
+            var tm = stack.GetComponent<Tonemapping>();
+            float exposure = Mathf.Pow(2f, ca.postExposure.value);
+            var tmMode = tm.mode.value;
+            var err = new Dictionary<LutFix.Mode, double>();
+            foreach (var k in shots.Keys) err[k] = 0;
+            int count = 0;
+            for (int y = h / 4; y < h * 3 / 4; y += 5)
+                for (int x = w / 4; x < w * 3 / 4; x += 5)
+                {
+                    var np = noPost[y * w + x];
+                    if (np.r >= 250 || np.g >= 250 || np.b >= 250) continue;
+                    var c = new Vector3(S2L(np.r), S2L(np.g), S2L(np.b)) * exposure;
+                    if (tmMode == TonemappingMode.Neutral) c = new Vector3(Neutral(c.x), Neutral(c.y), Neutral(c.z));
+                    else if (tmMode == TonemappingMode.ACES) c = new Vector3(Aces(c.x), Aces(c.y), Aces(c.z));
+                    var o = Lut(table, n, c);
+                    float pr = L2S(o.x), pg = L2S(o.y), pb = L2S(o.z);
+                    foreach (var kv in shots)
+                    {
+                        if (kv.Value.Length != w * h) continue;
+                        var a = kv.Value[y * w + x];
+                        err[kv.Key] += Math.Abs(a.r - pr) + Math.Abs(a.g - pg) + Math.Abs(a.b - pb);
+                    }
+                    count++;
+                }
+            if (count < 100) { Log.Info($"  LUT judge: only {count} usable pixels, skipped"); return; }
+            var line = string.Join(", ", err.Select(kv => $"{kv.Key} {kv.Value / count / 3:0.0}"));
+            var best = err.OrderBy(kv => kv.Value).First();
+            var second = err.Where(kv => kv.Key != best.Key).Select(kv => kv.Value).DefaultIfEmpty(double.MaxValue).Min();
+            bool clear = (second - best.Value) / count / 3 > 1.5;
+            Log.Info($"  LUT judge (tonemap {tmMode}, exposure x{exposure:0.00}, {count} px): mean error vs predicted image per channel: {line} -> " +
+                     (clear ? $"using {best.Key}" : $"too close to call, keeping {LutFix.Current}"));
+            if (clear) LutFix.Set(best.Key, true);
         }
 
         static void Safe(string what, Action a)
