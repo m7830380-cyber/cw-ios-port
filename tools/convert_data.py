@@ -32,7 +32,7 @@ IOS_PLATFORM = 9
 DEFAULT_GAME = r'C:\Users\v0id\cw-original'
 DEFAULT_WORK = r'C:\Users\v0id\cw-work'
 DATA_DIR = 'Content Warning_Data'
-CONVERTER_VERSION = 'cw-1'   # bump to invalidate the shader cache
+CONVERTER_VERSION = 'cw-2'   # bump to invalidate the shader cache
 
 
 def log(*a):

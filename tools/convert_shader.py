@@ -14,7 +14,7 @@ iOS shaders (unity_builtin_extra): 37 normally, 39 for vertex programs that writ
 import os, re, json, struct, subprocess, copy, hashlib
 import lz4.block
 from ukblob import read_params, write_params, read_sub, write_sub
-from dx2metal import merge_params, prep_dxbc
+from dx2metal import merge_params, prep_dxbc, var_size
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _UK_HLSLCC = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'ultrakill-ios-port', 'tools', 'hlslcc_cli',
@@ -228,6 +228,55 @@ class HlslccBatch:
         return open(p + '.metal', 'rb').read(), refl
 
 
+# ---------------- shared cbuffer layouts ----------------
+def shared_cb_layouts(tt, chunks, ents, name, log):
+    """Named cbuffer (UnityPerDraw, UnityPerMaterial, ...) -> the union of its variables over every DX11
+    program of the shader. Unity's DX11 parameters list only what each program uses, and HLSLcc packs a Metal
+    cbuffer struct from what it is told, so the vertex and fragment programs of one pass would disagree on
+    member offsets - the SRP Batcher (and BatchRendererGroup / GPU Resident Drawer, which then draws the
+    error shader) rejects that ("Builtin property offset in cbuffer overlap other stages"). Declaring the
+    same full variable list in every program gives identical structs everywhere.
+    $Globals stays per program (it is per stage on Metal and not used by the batcher). A cbuffer whose
+    variants disagree (same name at another offset, or overlapping variables) is left alone."""
+    union, bad = {}, set()
+    for ss in tt['m_ParsedForm']['m_SubShaders']:
+        for p in ss['m_Passes']:
+            names = {v: k for k, v in p['m_NameIndices']}
+            for prog in PROGS:
+                pr = p[prog]
+                for slot, lst in enumerate(pr['m_PlayerSubPrograms']):
+                    pbl = pr['m_ParameterBlobIndices'][slot] if slot < len(pr['m_ParameterBlobIndices']) else []
+                    for ei, e in enumerate(lst):
+                        if e['m_GpuProgramType'] not in DX_VS | DX_PS:
+                            continue
+                        pbi = pbl[ei] if pbl else -1
+                        try:
+                            bp = read_params(get_seg(chunks, ents[pbi])) if pbi >= 0 else None
+                            P = merge_params(pr['m_CommonParameters'], names, bp)
+                        except Exception:
+                            continue
+                        for cn, cb in P['cbs'].items():
+                            if cn == '$Globals':
+                                continue
+                            u = union.setdefault(cn, dict(size=0, vars={}))
+                            u['size'] = max(u['size'], cb['size'])
+                            for v in cb['vars']:
+                                o = u['vars'].setdefault(v['name'], v)
+                                if (o['offset'], o['cols'], o['rows'], o['isMatrix'], o['arraySize']) != \
+                                        (v['offset'], v['cols'], v['rows'], v['isMatrix'], v['arraySize']):
+                                    bad.add(cn)
+    out = {}
+    for cn, u in union.items():
+        vs = sorted(u['vars'].values(), key=lambda v: v['offset'])
+        if cn not in bad and any(a['offset'] + var_size(a) > b['offset'] for a, b in zip(vs, vs[1:])):
+            bad.add(cn)
+        if cn in bad:
+            log('  [%s] cbuffer %s: variants disagree, layout left per program' % (name, cn))
+            continue
+        out[cn] = dict(size=u['size'], vars=vs)
+    return out
+
+
 # ---------------- main conversion ----------------
 def convert_shader(tt, blob, workdir, log=print):
     """tt: Shader typetree (compressedBlob emptied), blob: compressed blob bytes.
@@ -243,6 +292,7 @@ def convert_shader(tt, blob, workdir, log=print):
     keymap = {}     # (subshader, pass, prog, blob index, param index) -> key or None
     by_digest = {}  # sha1 of the prepared DXBC -> key
     stats = dict(ok=0, fail=0, dropped=0)
+    layouts = shared_cb_layouts(tt, chunks, ents, name, log)
     for si, ss in enumerate(tt['m_ParsedForm']['m_SubShaders']):
         for pa, p in enumerate(ss['m_Passes']):
             names = {v: k for k, v in p['m_NameIndices']}
@@ -266,6 +316,10 @@ def convert_shader(tt, blob, workdir, log=print):
                         try:
                             bp = read_params(get_seg(chunks, ents[pbi])) if pbi >= 0 else None
                             P = merge_params(pr['m_CommonParameters'], names, bp)
+                            for cn, cb in P['cbs'].items():
+                                if cn in layouts:
+                                    cb['vars'] = [dict(v) for v in layouts[cn]['vars']]
+                                    cb['size'] = layouts[cn]['size']
                             sub = read_sub(get_seg(chunks, ents[e['m_BlobIndex']]))
                             dx, _ = prep_dxbc(sub['code'], P)
                             dig = hashlib.sha1(dx).hexdigest()   # passes often share identical programs
