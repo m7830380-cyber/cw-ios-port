@@ -150,7 +150,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          [ -d staged-managed ] || { echo "nothing staged"; exit 0; }
+          [ -n "$(ls -A staged-managed 2>/dev/null)" ] || { echo "nothing staged"; exit 0; }
           zip -qrj staged-managed.zip staged-managed
           gh release view debug-staged --repo "$PRIVATE_REPO" >/dev/null 2>&1 || \
             gh release create debug-staged --title "debug: staged assemblies" --notes "from failed shell builds" --prerelease --repo "$PRIVATE_REPO"

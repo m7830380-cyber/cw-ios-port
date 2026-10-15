@@ -2,7 +2,6 @@
   <!-- Retail game assemblies (patched) and the iOS additions: keep everything. Scenes/prefabs in the game data
        reference types the build cannot see, and Odin, Newtonsoft.Json, Localization, Addressables, the Input System
        and Photon create types through reflection. Generated from the game Managed folder (minus GDK / Xbox PC). -->
-  <assembly fullname="0Harmony" preserve="all"/>
   <assembly fullname="Ashley.MeshSplitter" preserve="all"/>
   <assembly fullname="Assembly-CSharp-firstpass" preserve="all"/>
   <assembly fullname="Assembly-CSharp" preserve="all"/>
@@ -14,8 +13,6 @@
   <assembly fullname="Managers" preserve="all"/>
   <assembly fullname="MeshSplit" preserve="all"/>
   <assembly fullname="ModalAssembly" preserve="all"/>
-  <assembly fullname="MonoMod.RuntimeDetour" preserve="all"/>
-  <assembly fullname="MonoMod.Utils" preserve="all"/>
   <assembly fullname="Newtonsoft.Json" preserve="all"/>
   <assembly fullname="Photon" preserve="all"/>
   <assembly fullname="Photon3Unity3D" preserve="all"/>

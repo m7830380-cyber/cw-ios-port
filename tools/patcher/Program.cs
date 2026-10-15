@@ -53,7 +53,13 @@ static partial class Program
     };
 
     // Shipped with the PC game but never used by the iOS build (Xbox PC / GDK).
-    static readonly HashSet<string> Dropped = new HashSet<string> { "Unity.Microsoft.GDK.dll", "Unity.Microsoft.GDK.Tools.dll", "XblPCSandbox.dll" };
+    // Harmony / MonoMod / Mono.Cecil (mod loading) need Mono.Cecil and runtime code generation, neither of which exists
+    // under IL2CPP (the linker rejects them): the game's only use, Plugin.Harmony, is removed (RemoveHarmony).
+    static readonly HashSet<string> Dropped = new HashSet<string> { "Unity.Microsoft.GDK.dll", "Unity.Microsoft.GDK.Tools.dll", "XblPCSandbox.dll",
+        "0Harmony.dll", "MonoMod.RuntimeDetour.dll", "MonoMod.Utils.dll",
+        // Mono.Cecil: the game reads mod DLLs with it (plugin metadata); not part of the iOS build either
+        "Mono.Cecil.dll", "Mono.Cecil.Mdb.dll", "Mono.Cecil.Pdb.dll", "Mono.Cecil.Rocks.dll" };
+    static readonly HashSet<string> DroppedNames = new HashSet<string>(Dropped.Select(Path.GetFileNameWithoutExtension));
 
     static int Main(string[] args)
     {
@@ -120,6 +126,7 @@ static partial class Program
             string an = asm.Name.Name;
             // game-specific rewrites first: they replace calls the generic passes would otherwise redirect
             if (an == "Assembly-CSharp") n += Step("game", PatchGame(ctx));
+            n += Step("harmony", RemoveHarmony(ctx));
             if (an == "Managers") n += Step("platform", PatchManagers(ctx));
             if (an == "Platforms") n += Step("servers", PatchPlatforms(ctx));
             if (an == "SteamManagerAssembly") n += Step("steam", PatchSteamManager(ctx));
@@ -550,6 +557,80 @@ static partial class Program
         return n;
     }
 
+    // ------------------------------------------------------------------------------------------
+    static bool IsDroppedType(TypeReference t)
+    {
+        if (t == null) return false;
+        if (t is GenericInstanceType git && git.GenericArguments.Any(IsDroppedType)) return true;
+        if (t is TypeSpecification ts) return IsDroppedType(ts.ElementType);
+        if (t.IsGenericParameter) return false;
+        if (t.DeclaringType != null) return IsDroppedType(t.DeclaringType);
+        return t.Scope is AssemblyNameReference a && DroppedNames.Contains(a.Name);
+    }
+
+    static bool IsDroppedMember(object operand) => operand switch
+    {
+        TypeReference t => IsDroppedType(t),
+        MethodReference m => IsDroppedType(m.DeclaringType) || IsDroppedType(m.ReturnType) || m.Parameters.Any(p => IsDroppedType(p.ParameterType)) ||
+                             (m is GenericInstanceMethod gim && gim.GenericArguments.Any(IsDroppedType)),
+        FieldReference f => IsDroppedType(f.DeclaringType) || IsDroppedType(f.FieldType),
+        _ => false,
+    };
+
+    /// Removes every use of Harmony / MonoMod: fields of their types go, a "newobj X; stsfld field" pair in a static
+    /// constructor is cut out, and any other method touching them becomes "return default" (mod loading only).
+    /// Then the assembly references themselves are dropped; anything left over is a failure.
+    static int RemoveHarmony(Ctx c)
+    {
+        var mod = c.Mod;
+        if (!mod.AssemblyReferences.Any(r => DroppedNames.Contains(r.Name))) return 0;
+        int n = 0;
+        foreach (var t in mod.GetTypes())
+        {
+            var deadFields = t.Fields.Where(f => IsDroppedType(f.FieldType)).ToList();
+            foreach (var m in t.Methods.Where(m => m.HasBody))
+            {
+                var ins = m.Body.Instructions;
+                // static field initialisers: <args...>; newobj Dropped::.ctor; stsfld deadField  -> removed
+                if (m.IsConstructor && m.IsStatic)
+                    for (int i = 0; i < ins.Count; i++)
+                    {
+                        if (ins[i].OpCode != OpCodes.Stsfld || !(ins[i].Operand is FieldReference fr) || !IsDroppedType(fr.FieldType)) continue;
+                        int start = i - 1;
+                        if (start < 0 || ins[start].OpCode != OpCodes.Newobj) { c.Fail($"{m.FullName}: unexpected init of {fr.Name}"); continue; }
+                        var ctor = (MethodReference)ins[start].Operand;
+                        start -= ctor.Parameters.Count;
+                        if (start < 0 || ins.Skip(start).Take(ctor.Parameters.Count).Any(x => x.OpCode != OpCodes.Ldstr)) { c.Fail($"{m.FullName}: complex init of {fr.Name}"); continue; }
+                        for (int k = i; k >= start; k--) ins.RemoveAt(k);
+                        i = start - 1;
+                        n++;
+                    }
+                bool uses = ins.Any(x => IsDroppedMember(x.Operand)) || m.Body.Variables.Any(v => IsDroppedType(v.VariableType));
+                if (!uses) continue;
+                if (m.IsConstructor) { c.Fail($"{m.FullName}: uses Harmony/MonoMod in a constructor"); continue; }
+                var il = NewBody(m);
+                foreach (var p in m.Parameters)
+                    if (p.ParameterType is ByReferenceType br && p.IsOut) { il.Emit(OpCodes.Ldarg, p); il.Emit(OpCodes.Initobj, br.ElementType); }
+                EmitDefault(m, il, m.ReturnType);
+                il.Emit(OpCodes.Ret);
+                Console.WriteLine("  harmony: stubbed " + m.FullName);
+                n++;
+            }
+            foreach (var f in deadFields) { t.Fields.Remove(f); n++; }
+            foreach (var p in t.Properties.Where(p => IsDroppedType(p.PropertyType)).ToList()) t.Properties.Remove(p);
+        }
+        // anything still pointing at the dropped assemblies (signatures, attributes, base types) is a failure
+        foreach (var t in mod.GetTypes())
+        {
+            if (IsDroppedType(t.BaseType) || t.Interfaces.Any(i => IsDroppedType(i.InterfaceType))) c.Fail($"{t.FullName}: derives from Harmony/MonoMod");
+            foreach (var m in t.Methods)
+                if (IsDroppedType(m.ReturnType) || m.Parameters.Any(p => IsDroppedType(p.ParameterType))) c.Fail($"{m.FullName}: Harmony/MonoMod in signature");
+            if (t.CustomAttributes.Any(a => IsDroppedType(a.AttributeType))) c.Fail($"{t.FullName}: Harmony attribute");
+        }
+        foreach (var r in mod.AssemblyReferences.Where(r => DroppedNames.Contains(r.Name)).ToList()) mod.AssemblyReferences.Remove(r);
+        return n;
+    }
+
     // PlatformManager: PLATFORM = new SteamRuntimeManager()  ->  new CWPlatform.IOSPlatform()
     static int PatchManagers(Ctx c)
     {
@@ -727,6 +808,15 @@ static partial class Program
             string name = Path.GetFileNameWithoutExtension(path);
             if (name == ShimName || name == PlatformAsmName || name == "CWIOS") continue;
             var mod = ModuleDefinition.ReadModule(path);
+            foreach (var r in mod.AssemblyReferences)
+            {
+                if (DroppedNames.Contains(r.Name)) Problem($"{name}: still references dropped assembly {r.Name}");
+                // everything referenced must ship in the plugins folder or come with Unity (engine modules, BCL)
+                bool engine = r.Name.StartsWith("UnityEngine") || r.Name.StartsWith("System") || r.Name == "mscorlib" ||
+                              r.Name == "netstandard" || (r.Name.StartsWith("Mono.") && !r.Name.StartsWith("Mono.Cecil")) || r.Name.StartsWith("Microsoft.") || r.Name == "Accessibility";
+                if (!engine && !File.Exists(Path.Combine(dir, r.Name + ".dll")) && !(r.Name == "CWIOS"))
+                    Problem($"{name}: references {r.Name}, which is not in the build");
+            }
             foreach (var t in mod.GetTypes())
                 foreach (var m in t.Methods)
                 {
