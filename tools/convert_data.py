@@ -11,7 +11,7 @@ For every serialized player file (globalgamemanagers, levels, sharedassets, reso
   * BCn textures become ASTC, BC6H / half-float lightmaps ASTC HDR, 4096 maps 2048 (transcode_tex.py);
   * .resS streams that hold re-encoded textures are rebuilt, all others are copied unchanged.
 Addressables bundles (StreamingAssets/aa, the localization tables / images): same conversion, iOS tag, LZ4.
-The binary catalog's Windows path separators become "/" (byte for byte, so every offset stays valid); the
+The binary catalog is copied unchanged (its paths are already joined with "/" at load time); the
 patched Unity.ResourceManager ignores the bundle CRCs the converted bundles no longer match.
 Resources/ is not produced: the iOS player brings its own "unity default resources" and unity_builtin_extra.
 
@@ -199,14 +199,8 @@ def job(kind, *args):
 
 
 def fix_catalog(raw):
-    """Windows separators in the binary catalog -> '/', in place (same length, offsets stay valid);
-    settings.json says iOS."""
-    cat = os.path.join(raw, 'aa', 'catalog.bin')
-    if os.path.exists(cat):
-        b = open(cat, 'rb').read()
-        n = b.count(b'\\')
-        open(cat, 'wb').write(b.replace(b'\\', b'/'))
-        log('catalog.bin: %d path separators fixed' % n)
+    """settings.json says iOS. catalog.bin stays byte-identical: it is a binary buffer (offsets, lengths, hashes)
+    and its internal ids are joined with '/' at load time, so editing bytes in it corrupts it."""
     st = os.path.join(raw, 'aa', 'settings.json')
     if os.path.exists(st):
         s = json.load(open(st, encoding='utf8'))

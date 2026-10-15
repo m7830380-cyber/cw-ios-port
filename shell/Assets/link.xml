@@ -84,6 +84,8 @@
   <assembly fullname="pworld" preserve="all"/>
   <assembly fullname="sc.posteffects.runtime" preserve="all"/>
   <assembly fullname="websocket-sharp" preserve="all"/>
+  <!-- UXML assets (Zorro console) reference VisualElement/UxmlSerializedData types the linker strips -->
+  <assembly fullname="UnityEngine.UIElementsModule" preserve="all"/>
   <assembly fullname="CWIOS" preserve="all"/>
   <assembly fullname="CWShim" preserve="all"/>
   <assembly fullname="CWPlatform" preserve="all"/>
