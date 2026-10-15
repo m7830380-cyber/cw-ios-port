@@ -25,6 +25,9 @@ namespace CWIOS
                 catch (Exception e) { Log.Warn("native crash logger unavailable: " + e.Message); }
             }
             Log.Info($"Content Warning iOS starting. documents={docs}");
+            // GameHandler writes Saves/metaData.m before SaveSystem creates the folder on a first run
+            try { System.IO.Directory.CreateDirectory(Application.persistentDataPath + "/Saves"); }
+            catch (Exception e) { Log.Warn("could not create Saves folder: " + e.Message); }
             if (Log.PreviousRunEnding != null) Log.Info("previous run: " + Log.PreviousRunEnding);
             Log.Info($"device={SystemInfo.deviceModel} os={SystemInfo.operatingSystem} gpu={SystemInfo.graphicsDeviceName} " +
                      $"api={SystemInfo.graphicsDeviceType} mem={SystemInfo.systemMemorySize}MB gfxmem={SystemInfo.graphicsMemorySize}MB " +
