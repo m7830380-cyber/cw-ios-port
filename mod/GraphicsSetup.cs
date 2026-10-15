@@ -40,7 +40,29 @@ namespace CWIOS
                 Fix(QualitySettings.renderPipeline, "current quality");
             }
             catch (Exception e) { Log.Error("graphics setup: " + e); }
-            SceneManager.sceneLoaded += (s, m) => s_CheckFrame = Time.frameCount + 30;
+            SceneManager.sceneLoaded += (s, m) => { s_CheckFrame = Time.frameCount + 30; FixJelly(); };
+        }
+
+        /// RenderFeatureHandler's serialized reference to the jello FullScreenPassRendererFeature (an object inside
+        /// globalgamemanagers.assets) comes back null on iOS, so its Start/Update throw every frame. Runs before Start:
+        /// hand it the renderer's FullScreenPassRendererFeature.
+        static void FixJelly()
+        {
+            try
+            {
+                ScriptableRendererFeature jelly = null;
+                if (GraphicsSettings.defaultRenderPipeline is UniversalRenderPipelineAsset urp &&
+                    typeof(UniversalRenderPipelineAsset).GetField("m_RendererDataList", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(urp) is ScriptableRendererData[] list)
+                    foreach (var d in list)
+                        if (d != null)
+                            foreach (var f in d.rendererFeatures)
+                                if (f is FullScreenPassRendererFeature) jelly = f;
+                if (jelly == null) return;
+                var fld = typeof(RenderFeatureHandler).GetField("m_HighFidelity", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                foreach (var h in UnityEngine.Object.FindObjectsByType<RenderFeatureHandler>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (fld.GetValue(h) as UnityEngine.Object == null) { fld.SetValue(h, jelly); Log.Info($"RenderFeatureHandler: jello feature reconnected ({jelly.name})"); }
+            }
+            catch (Exception e) { Log.Warn("jelly fix: " + e.Message); }
         }
 
         static int s_CheckFrame = -1;

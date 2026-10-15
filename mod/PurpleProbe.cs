@@ -55,6 +55,118 @@ namespace CWIOS
             if (shot == null) yield break;
             Safe("probe", () => Analyze(shot, why));
             Destroy(shot);
+            yield return Ablate(why);
+        }
+
+        // ---------- colour-cast ablation ----------
+        // Everything tinted purple/green (not error-magenta) comes from one stage of the frame. Turn each
+        // post-processing stage off for two frames, capture, and log the average colour: the stage whose removal
+        // restores neutral colour is the broken one.
+        static string Avg(Texture2D t, out float cast)
+        {
+            var px = t.GetPixels32();
+            long r = 0, g = 0, b = 0; int n = 0;
+            for (int i = 0; i < px.Length; i += 7) { r += px[i].r; g += px[i].g; b += px[i].b; n++; }
+            float fr = r / (float)n, fg = g / (float)n, fb = b / (float)n;
+            cast = (fr + fb) / 2 - fg;
+            return $"rgb=({fr:0},{fg:0},{fb:0}) purple-vs-green={cast:+0;-0}";
+        }
+
+        IEnumerator Capture(string label, string why, bool savePng, Action<float> done = null)
+        {
+            yield return null;
+            yield return null;
+            yield return new WaitForEndOfFrame();
+            Texture2D t = null;
+            try { t = ScreenCapture.CaptureScreenshotAsTexture(); } catch (Exception e) { Log.Warn("ablate capture: " + e.Message); }
+            if (t == null) yield break;
+            Safe("ablate " + label, () =>
+            {
+                Log.Info($"  colour [{label}]: {Avg(t, out float cast)}");
+                done?.Invoke(cast);
+                if (savePng)
+                {
+                    int sw = t.width / 4, sh = t.height / 4;
+                    var src = t.GetPixels32();
+                    var small = new Texture2D(sw, sh, TextureFormat.RGB24, false);
+                    var spx = new Color32[sw * sh];
+                    for (int y = 0; y < sh; y++)
+                        for (int x = 0; x < sw; x++) spx[y * sw + x] = src[(y * 4) * t.width + x * 4];
+                    small.SetPixels32(spx);
+                    small.Apply();
+                    string f = $"probe-{(s_Shot - 1) % 8}-{label}.png";
+                    File.WriteAllBytes(System.IO.Path.Combine(Application.persistentDataPath, f), small.EncodeToPNG());
+                    Destroy(small);
+                }
+            });
+            Destroy(t);
+        }
+
+        static List<ScriptableRendererFeature> ActiveFeatures()
+        {
+            var res = new List<ScriptableRendererFeature>();
+            if (GraphicsSettings.defaultRenderPipeline is UniversalRenderPipelineAsset urp &&
+                typeof(UniversalRenderPipelineAsset).GetField("m_RendererDataList", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(urp) is ScriptableRendererData[] list)
+                foreach (var d in list)
+                    if (d != null)
+                        foreach (var f in d.rendererFeatures)
+                            if (f != null && f.isActive) res.Add(f);
+            return res;
+        }
+
+        static Dictionary<Type, List<VolumeComponent>> ActiveVolumeComponents()
+        {
+            var res = new Dictionary<Type, List<VolumeComponent>>();
+            foreach (var v in FindObjectsByType<Volume>(FindObjectsSortMode.None))
+            {
+                if (!v.isActiveAndEnabled) continue;
+                var prof = v.HasInstantiatedProfile() ? v.profile : v.sharedProfile;
+                if (prof == null) continue;
+                foreach (var c in prof.components)
+                    if (c != null && c.active)
+                    {
+                        if (!res.TryGetValue(c.GetType(), out var l)) res[c.GetType()] = l = new List<VolumeComponent>();
+                        l.Add(c);
+                    }
+            }
+            return res;
+        }
+
+        IEnumerator Ablate(string why)
+        {
+            if (SceneManager.GetActiveScene().name == "") yield break;
+            Log.Info($"colour ablation [{why}] (each line = that stage switched off for 2 frames):");
+            yield return Capture("normal", why, true);
+
+            var cams = FindObjectsByType<UniversalAdditionalCameraData>(FindObjectsSortMode.None).Where(c => c.renderPostProcessing).ToList();
+            foreach (var c in cams) c.renderPostProcessing = false;
+            yield return Capture("no-post-processing", why, true);
+            foreach (var c in cams) if (c != null) c.renderPostProcessing = true;
+
+            var feats = ActiveFeatures();
+            foreach (var f in feats) f.SetActive(false);
+            yield return Capture("no-renderer-features", why, true);
+            foreach (var f in feats) if (f != null) f.SetActive(true);
+
+            foreach (var f in feats)
+            {
+                f.SetActive(false);
+                yield return Capture("without " + f.GetType().Name, why, false);
+                if (f != null) f.SetActive(true);
+            }
+
+            foreach (var kv in ActiveVolumeComponents())
+            {
+                foreach (var c in kv.Value) c.active = false;
+                yield return Capture("without volume " + kv.Key.Name, why, false);
+                foreach (var c in kv.Value) if (c != null) c.active = true;
+            }
+
+            float ev = Shader.GetGlobalFloat("Evening");
+            Shader.SetGlobalFloat("Evening", ev > 0.5f ? 0f : 1f);
+            yield return Capture($"Evening {ev:0.##}->{(ev > 0.5f ? 0 : 1)}", why, false);
+            Shader.SetGlobalFloat("Evening", ev);
+            Log.Info("colour ablation done");
         }
 
         static void Safe(string what, Action a)
