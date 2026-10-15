@@ -547,6 +547,22 @@ static partial class Program
             n++;
         }
 
+        // --- touch stick: analog movement from the on-screen stick ------------------------------------
+        // Player.PlayerInput.SampeInput: movementInput = moveAction.action.ReadValue<Vector2>()  ->  VInput.TouchMove(...)
+        var sample = Method(c, mod.GetType("Player/PlayerInput"), "SampeInput", 2);
+        if (sample != null)
+        {
+            var read = sample.Body.Instructions.FirstOrDefault(i => (i.OpCode == OpCodes.Callvirt || i.OpCode == OpCodes.Call) &&
+                i.Operand is MethodReference r && r.Name == "ReadValue" && r.DeclaringType.Name == "InputAction" &&
+                i.Previous?.Previous is Instruction ld && ld.OpCode == OpCodes.Ldfld && ((FieldReference)ld.Operand).Name == "moveAction");
+            if (read == null) c.Fail("SampeInput: moveAction.ReadValue<Vector2>() not found");
+            else
+            {
+                sample.Body.GetILProcessor().InsertAfter(read, Instruction.Create(OpCodes.Call, c.ShimMethod("VInput", "TouchMove", "UnityEngine.Vector2")));
+                n++;
+            }
+        }
+
         // --- no server contact -------------------------------------------------------------------------
         n += MakeNoOp(c, mod.GetType("CheckVersionHandler"), "CheckVersion", 0);   // azurewebsites version check
         // --- no mods: Harmony / MonoMod cannot work under IL2CPP; Workshop is Steam ---------------------

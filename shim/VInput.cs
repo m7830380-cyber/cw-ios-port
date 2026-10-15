@@ -17,6 +17,11 @@ namespace CWShim
     {
         public static bool Virtual;
 
+        /// Analog movement from the on-screen stick (-1..1). The patcher feeds the player's movement read
+        /// (Player.PlayerInput.SampeInput, moveAction.ReadValue) through <see cref="TouchMove"/>.
+        public static Vector2 VStick;
+        public static Vector2 TouchMove(Vector2 v) => Virtual && v.sqrMagnitude < 0.01f && VStick.sqrMagnitude > 0.0001f ? VStick : v;
+
         // ---- virtual mouse -------------------------------------------------------------------
         public static Vector3 VMousePosition;
         /// Scroll accumulated by the touch layer; becomes this frame's mouseScrollDelta at BeginFrame.

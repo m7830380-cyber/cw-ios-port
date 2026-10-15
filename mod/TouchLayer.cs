@@ -7,7 +7,7 @@ namespace CWIOS
     /// <summary>
     /// Fingers -> virtual input. While the game shows a cursor (menus, escape menu, terminals) touch is the mouse:
     /// one finger moves the pointer and holds the left button (tap = click, drag = drag), two fingers scroll.
-    /// The FPS counter corner opens the log viewer. (Gameplay controls - stick, look, buttons - come with the HUD.)
+    /// The FPS counter corner opens the log viewer. While the cursor is locked (gameplay) fingers go to TouchHud.
     /// </summary>
     public class TouchLayer : MonoBehaviour
     {
@@ -15,8 +15,18 @@ namespace CWIOS
         int m_Pointer = -1;
         bool m_Scrolling;
         Vector2 m_LastScrollPos;
+        readonly List<Touch> m_Free = new List<Touch>();
 
         public static bool CursorFree => VCursor.LockState != CursorLockMode.Locked;
+
+        void Update() => GraphicsSetup.Tick();
+
+        void OnGUI()
+        {
+            if (Event.current.type != EventType.Repaint || DebugOverlay.ShowingLog) return;
+            GUI.depth = -100;
+            TouchHud.Draw();
+        }
 
         void OnEnable() => VirtualInput.Tick += Tick;
         void OnDisable() => VirtualInput.Tick -= Tick;
@@ -28,6 +38,7 @@ namespace CWIOS
             Vector2 sum = Vector2.zero;
             Touch primary = default;
             bool havePrimary = false;
+            m_Free.Clear();
             for (int i = 0; i < count; i++)
             {
                 var t = Input.GetTouch(i);
@@ -38,6 +49,7 @@ namespace CWIOS
                     if (ended) m_Consumed.Remove(t.fingerId);
                     continue;
                 }
+                m_Free.Add(t);
                 if (ended)
                 {
                     if (t.fingerId == m_Pointer) m_Pointer = -1;
@@ -48,7 +60,8 @@ namespace CWIOS
                 if (m_Pointer < 0 && !m_Scrolling) m_Pointer = t.fingerId;
                 if (t.fingerId == m_Pointer) { primary = t; havePrimary = true; }
             }
-            if (DebugOverlay.ShowingLog) { m_Pointer = -1; return; }
+            if (DebugOverlay.ShowingLog) { m_Pointer = -1; TouchHud.Tick(m_Free, false); return; }
+            TouchHud.Tick(m_Free, !CursorFree);
             if (!CursorFree) { m_Pointer = -1; m_Scrolling = false; return; }
 
             if (free >= 2)

@@ -36,6 +36,13 @@ namespace CWIOS
         public static string Text = "";            // typed text for the legacy inputString this frame
 
         public static void HoldKey(Key k) => s_Keys.Add(k);
+        /// Hold a legacy-API key (a GlobalInputHandler keybind) this frame.
+        public static void HoldLegacyKey(KeyCode k) { if (k != KeyCode.None) s_ExtraLegacy.Add(k); }
+        /// Press an Input System key for two frames (one-shot buttons).
+        public static void TapKey(Key k) => s_Taps[k] = 2;
+
+        static readonly HashSet<KeyCode> s_ExtraLegacy = new HashSet<KeyCode>();
+        static readonly Dictionary<Key, int> s_Taps = new Dictionary<Key, int>();
 
         static int s_LastFrame = -1;
         static int s_Errors;
@@ -79,6 +86,7 @@ namespace CWIOS
             try
             {
                 s_Keys.Clear();
+                s_ExtraLegacy.Clear();
                 Stick = Vector2.zero;
                 PointerDelta = Vector2.zero;
                 Scroll = 0;
@@ -102,6 +110,12 @@ namespace CWIOS
         static void Push()
         {
             if (Kb == null) return;
+            if (s_Taps.Count > 0)
+                foreach (var k in new List<Key>(s_Taps.Keys))
+                {
+                    s_Keys.Add(k);
+                    if (--s_Taps[k] <= 0) s_Taps.Remove(k);
+                }
             var ms = new MouseState { position = PointerPos, delta = PointerDelta, scroll = new Vector2(0, Scroll * 120f) };
             if (LeftButton) ms = ms.WithButton(MouseButton.Left, true);
             if (RightButton) ms = ms.WithButton(MouseButton.Right, true);
@@ -124,6 +138,11 @@ namespace CWIOS
             {
                 var kc = ToKeyCode(k);
                 if (kc == KeyCode.None) continue;
+                VInput.SetKey(kc, true);
+                s_LegacyKeys.Add(kc);
+            }
+            foreach (var kc in s_ExtraLegacy)
+            {
                 VInput.SetKey(kc, true);
                 s_LegacyKeys.Add(kc);
             }

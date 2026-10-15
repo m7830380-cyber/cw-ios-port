@@ -45,6 +45,10 @@ namespace CWIOS
                 Platform.ApplyFrameRate();
                 Platform.BeforeQuit = Log.Flush;
                 Offline.ScrubServerSettings();
+                Screen.autorotateToPortrait = Screen.autorotateToPortraitUpsideDown = false;
+                Screen.autorotateToLandscapeLeft = Screen.autorotateToLandscapeRight = true;
+                Screen.orientation = ScreenOrientation.AutoRotation;
+                GraphicsSetup.Configure();
 
                 var go = new GameObject("CW-iOS");
                 UnityEngine.Object.DontDestroyOnLoad(go);
