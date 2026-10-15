@@ -57,6 +57,7 @@ namespace CWIOS
                 UnityEngine.Object.DontDestroyOnLoad(go);
                 go.AddComponent<DebugOverlay>();
                 go.AddComponent<Lifecycle>();
+                go.AddComponent<PurpleProbe>();
                 if (OnDevice)
                 {
                     VInput.Virtual = true;

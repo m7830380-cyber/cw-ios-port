@@ -7,6 +7,8 @@ What changes (reported per texture in convert_report.json):
   * Anything larger than MAX_SIZE (the 4096x4096 lightmaps) loses its top mip level(s): 4096 -> 2048.
   * Block size: mipmapped textures of 1024 px and more use 6x6 blocks (0.44 bytes/pixel instead of 1),
     smaller ones and UI / sprite textures without mipmaps keep 4x4 (sharpest).
+  * Crunched DXT1/DXT5 (Metal can't sample DXT at all, and Unity's software fallback fails on the 1x1 mips):
+    the base level is uncrunched and decoded, smaller mips are box-filtered from it.
 RGBA32 / RGB24 / Alpha8 and other uncompressed textures are left alone.
 
 Every texture's pixels live in the "<file>.resS" stream; the stream is rewritten with the new data and every
@@ -22,6 +24,8 @@ MAX_SIZE = 2048
 BIG = 1024
 # Unity TextureFormat ids
 RGBA_HALF, DXT1, DXT5, BC6H, BC7, BC4, BC5 = 17, 10, 12, 24, 25, 26, 27
+DXT1_CRUNCHED, DXT5_CRUNCHED = 28, 29
+CRUNCHED = {DXT1_CRUNCHED: DXT1, DXT5_CRUNCHED: DXT5}
 ASTC_LDR = {4: 48, 5: 49, 6: 50, 8: 51}
 ASTC_HDR = {4: 66, 5: 67, 6: 68, 8: 69}
 BLOCK_BYTES = {DXT1: 8, DXT5: 16, BC6H: 16, BC7: 16, BC4: 8, BC5: 16}
@@ -91,7 +95,7 @@ def plan(tt):
     fmt = tt.get('m_TextureFormat')
     name = tt.get('m_Name', '')
     hdr = fmt == BC6H or (fmt == RGBA_HALF and name.startswith('Lightmap-'))
-    if fmt not in BLOCK_BYTES and not hdr:
+    if fmt not in BLOCK_BYTES and fmt not in CRUNCHED and not hdr:
         return None
     w, h, mips = tt['m_Width'], tt['m_Height'], max(1, tt.get('m_MipCount', 1))
     drop = 0
@@ -109,6 +113,8 @@ def transcode(tt, data, p):
     mips0 = max(1, tt.get('m_MipCount', 1))
     images = max(1, tt.get('m_ImageCount', 1))
     sizes = _mips(w0, h0, mips0)
+    if fmt in CRUNCHED:
+        return _transcode_crunched(tt, data, p, sizes)
     per_image = sum(_src_mip_bytes(fmt, mw, mh) for mw, mh in sizes)
     if len(data) < per_image * images:
         raise ValueError('%s: %d bytes < %d x %d' % (tt.get('m_Name'), len(data), images, per_image))
@@ -139,8 +145,36 @@ def transcode(tt, data, p):
     return bytes(out)
 
 
+def _transcode_crunched(tt, data, p, sizes):
+    base = texture2ddecoder.unpack_unity_crunch(bytes(data))
+    w0, h0 = sizes[0]
+    img, typ = _decode(CRUNCHED[p['fmt']], base, w0, h0)
+    img = img.astype(np.float32)
+    profile = ae.ASTCProfile.LDR_SRGB if tt.get('m_ColorSpace') == 1 else ae.ASTCProfile.LDR
+    ctx = _context(profile, p['block'])
+    swz = ae.ASTCSwizzle.from_str('RGBA')
+    out = bytearray()
+    for level, (mw, mh) in enumerate(sizes):
+        if level:
+            ph, pw = img.shape[0], img.shape[1]
+            img = img[:ph - ph % 2 or ph, :pw - pw % 2 or pw]
+            if img.shape[0] > 1:
+                img = (img[0::2] + img[1::2]) / 2
+            if img.shape[1] > 1:
+                img = (img[:, 0::2] + img[:, 1::2]) / 2
+        if level >= p['drop']:
+            u8 = np.clip(img + 0.5, 0, 255).astype(np.uint8)
+            out += ctx.compress(ae.ASTCImage(ae.ASTCType.U8, mw, mh, 1, np.ascontiguousarray(u8).tobytes()), swz)
+    tt['m_TextureFormat'] = ASTC_LDR[p['block']]
+    tt['m_Width'], tt['m_Height'], tt['m_MipCount'] = p['w'], p['h'], p['mips']
+    tt['m_CompleteImageSize'] = len(out)
+    if 'm_PlatformBlob' in tt:
+        tt['m_PlatformBlob'] = []
+    return bytes(out)
+
+
 def describe(p, tt_before):
-    s = 'BC%s' % {DXT1: '1', DXT5: '3', BC4: '4', BC5: '5', BC6H: '6H', BC7: '7'}.get(p['fmt'], '?') if p['fmt'] != RGBA_HALF else 'RGBAHalf'
+    s = 'BC%s' % {DXT1: '1', DXT5: '3', BC4: '4', BC5: '5', BC6H: '6H', BC7: '7', DXT1_CRUNCHED: '1 crunched', DXT5_CRUNCHED: '3 crunched'}.get(p['fmt'], '?') if p['fmt'] != RGBA_HALF else 'RGBAHalf'
     t = 'ASTC%s %dx%d' % (' HDR' if p['hdr'] else '', p['block'], p['block'])
     size = '' if not p['drop'] else ' %dx%d->%dx%d' % (tt_before[0], tt_before[1], p['w'], p['h'])
     return '%s -> %s%s' % (s, t, size)

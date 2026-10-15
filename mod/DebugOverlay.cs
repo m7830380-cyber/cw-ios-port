@@ -20,6 +20,7 @@ namespace CWIOS
             if (ShowingLog)
             {
                 ShowingLog = false;
+                if (pos.y > Screen.height * 0.82f) PurpleProbe.Request("log viewer header tapped");
                 return true;
             }
             if (s_Corner.Contains(pos))
@@ -85,7 +86,7 @@ namespace CWIOS
             string head =
                 $"{m_Fps:0} fps (worst {m_WorstShown:0} ms)   memory: unity {mem} MB, managed {mono} MB   errors {Log.ErrorCount}, warnings {Log.WarningCount}\n" +
                 $"player {Identity.NickName}   cursor {(TouchLayer.CursorFree ? "free" : "locked")}   blocked connections {Net.Blocked}\n" +
-                $"log file: Files > On My iPhone > Content Warning > {Log.FileName}   (tap anywhere to close)";
+                $"log file: Files > On My iPhone > Content Warning > {Log.FileName}   (tap anywhere to close; tap this header to save a screenshot + purple check)";
             float headH = h * 0.16f;
             GUI.Label(new Rect(x, h * 0.02f, cw, headH), head, m_Head);
             string all = string.Join("\n", Log.Snapshot());
