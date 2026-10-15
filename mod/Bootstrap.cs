@@ -52,6 +52,7 @@ namespace CWIOS
                 Screen.autorotateToLandscapeLeft = Screen.autorotateToLandscapeRight = true;
                 Screen.orientation = ScreenOrientation.AutoRotation;
                 GraphicsSetup.Configure();
+                LutFix.Install();
 
                 var go = new GameObject("CW-iOS");
                 UnityEngine.Object.DontDestroyOnLoad(go);

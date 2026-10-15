@@ -62,17 +62,18 @@ namespace CWIOS
         // Everything tinted purple/green (not error-magenta) comes from one stage of the frame. Turn each
         // post-processing stage off for two frames, capture, and log the average colour: the stage whose removal
         // restores neutral colour is the broken one.
-        static string Avg(Texture2D t, out float cast)
+        static string Avg(Texture2D t, out Vector3 mean)
         {
             var px = t.GetPixels32();
             long r = 0, g = 0, b = 0; int n = 0;
             for (int i = 0; i < px.Length; i += 7) { r += px[i].r; g += px[i].g; b += px[i].b; n++; }
             float fr = r / (float)n, fg = g / (float)n, fb = b / (float)n;
-            cast = (fr + fb) / 2 - fg;
+            float cast = (fr + fb) / 2 - fg;
+            mean = new Vector3(fr, fg, fb);
             return $"rgb=({fr:0},{fg:0},{fb:0}) purple-vs-green={cast:+0;-0}";
         }
 
-        IEnumerator Capture(string label, string why, bool savePng, Action<float> done = null)
+        IEnumerator Capture(string label, string why, bool savePng, Action<Vector3> done = null)
         {
             yield return null;
             yield return null;
@@ -82,8 +83,8 @@ namespace CWIOS
             if (t == null) yield break;
             Safe("ablate " + label, () =>
             {
-                Log.Info($"  colour [{label}]: {Avg(t, out float cast)}");
-                done?.Invoke(cast);
+                Log.Info($"  colour [{label}]: {Avg(t, out Vector3 mean)}");
+                done?.Invoke(mean);
                 if (savePng)
                 {
                     int sw = t.width / 4, sh = t.height / 4;
@@ -136,12 +137,24 @@ namespace CWIOS
         {
             if (SceneManager.GetActiveScene().name == "") yield break;
             Log.Info($"colour ablation [{why}] (each line = that stage switched off for 2 frames):");
-            yield return Capture("normal", why, true);
+            Vector3 normal = default, noPost = default, other = default;
+            yield return Capture($"normal (LUT flip {(LutFix.Flip ? "on" : "off")})", why, true, m => normal = m);
 
             var cams = FindObjectsByType<UniversalAdditionalCameraData>(FindObjectsSortMode.None).Where(c => c.renderPostProcessing).ToList();
             foreach (var c in cams) c.renderPostProcessing = false;
-            yield return Capture("no-post-processing", why, true);
+            yield return Capture("no-post-processing", why, true, m => noPost = m);
             foreach (var c in cams) if (c != null) c.renderPostProcessing = true;
+
+            // LUT orientation check: the right one keeps the hue of the no-post-processing image.
+            bool flip = LutFix.Flip;
+            LutFix.Set(!flip, false);
+            yield return Capture($"LUT flip {(!flip ? "on" : "off")}", why, true, m => other = m);
+            float dCur = HueError(normal, noPost), dOther = HueError(other, noPost);
+            bool bright = noPost.x + noPost.y + noPost.z > 60 && normal != default && other != default;
+            bool switchIt = bright && dOther + 0.02f < dCur;
+            LutFix.Set(switchIt ? !flip : flip, bright && Math.Abs(dOther - dCur) > 0.02f);
+            Log.Info($"  LUT orientation: flip {(flip ? "on" : "off")} hue error {dCur:0.000}, flip {(!flip ? "on" : "off")} hue error {dOther:0.000}" +
+                     (bright ? $" -> using flip {(LutFix.Flip ? "on" : "off")}" : " -> too dark to judge, unchanged"));
 
             var feats = ActiveFeatures();
             foreach (var f in feats) f.SetActive(false);
@@ -167,6 +180,14 @@ namespace CWIOS
             yield return Capture($"Evening {ev:0.##}->{(ev > 0.5f ? 0 : 1)}", why, false);
             Shader.SetGlobalFloat("Evening", ev);
             Log.Info("colour ablation done");
+        }
+
+        /// Distance between the chromaticities (r,g,b / sum) of two average colours.
+        static float HueError(Vector3 a, Vector3 b)
+        {
+            float sa = a.x + a.y + a.z, sb = b.x + b.y + b.z;
+            if (sa < 1 || sb < 1) return 1;
+            return (a / sa - b / sb).magnitude;
         }
 
         static void Safe(string what, Action a)
