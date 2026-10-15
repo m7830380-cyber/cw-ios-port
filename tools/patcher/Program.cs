@@ -126,6 +126,7 @@ static partial class Program
             if (an == "com.rlabrecque.steamworks.net") n += Step("steamworks", PatchSteamworks(ctx));
             if (an == "Unity.Burst") n += Step("burst", PatchBurst(ctx));
             if (an == "Photon3Unity3D") n += Step("netguard", PatchPhotonConnect(ctx));
+            if (an == "Unity.ResourceManager") n += Step("bundlecrc", PatchBundleCrc(ctx));
             n += Step("pinvoke", RetargetPInvokes(ctx));
             n += Step("process", RedirectProcess(ctx));
             n += Step("cursor", RedirectCursor(ctx));
@@ -678,6 +679,20 @@ static partial class Program
         }
         if (n != 2) c.Fail($"PhotonPeer.Connect: expected 2 overloads, guarded {n}");
         return n;
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // The Addressables bundles (localization) are converted for iOS, so their bytes no longer match the CRCs in
+    // the binary catalog and Unity would refuse to load them: AssetBundleRequestOptions.Crc reads as 0 (= no check).
+    static int PatchBundleCrc(Ctx c)
+    {
+        var t = c.Mod.GetType("UnityEngine.ResourceManagement.ResourceProviders.AssetBundleRequestOptions");
+        var g = Method(c, t, "get_Crc", 0);
+        if (g == null) return 0;
+        var il = NewBody(g);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ret);
+        return 1;
     }
 
     // ------------------------------------------------------------------------------------------
