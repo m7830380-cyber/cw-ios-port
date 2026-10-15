@@ -33,12 +33,8 @@ namespace CWIOS
         void Awake()
         {
             s_Instance = this;
-            SceneManager.sceneLoaded += (s, m) =>
-            {
-                if (m != LoadSceneMode.Single) return;
-                Request("scene " + s.name, 4f);
-                Request("scene " + s.name + " (later)", 15f);
-            };
+            // No automatic runs: the ablation switches post-processing on and off on screen (it flickers).
+            // It only runs when the log viewer header is tapped.
         }
 
         IEnumerator Run(string why, float delay)

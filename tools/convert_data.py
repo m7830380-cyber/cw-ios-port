@@ -32,7 +32,7 @@ IOS_PLATFORM = 9
 DEFAULT_GAME = r'C:\Users\v0id\cw-original'
 DEFAULT_WORK = r'C:\Users\v0id\cw-work'
 DATA_DIR = 'Content Warning_Data'
-CONVERTER_VERSION = 'cw-2'   # bump to invalidate the shader cache
+CONVERTER_VERSION = 'cw-3'   # bump to invalidate the shader cache
 
 
 def log(*a):
@@ -193,7 +193,11 @@ def process_bundle(src, dst, cache_dir, work_dir):
 
 def job(kind, *args):
     try:
-        return (process_player_file if kind == 'player' else process_bundle)(*args)
+        import convert_shader
+        convert_shader.INLINE_SEEN.clear()
+        rep = (process_player_file if kind == 'player' else process_bundle)(*args)
+        rep['inline_samplers'] = {str(k): v for k, v in convert_shader.INLINE_SEEN.items()}
+        return rep
     except Exception:
         return {'error': traceback.format_exc()}
 
@@ -276,6 +280,11 @@ def main():
                 log('done bundle %s: textures %d (errors %d)' % (f, len(rep.get('texture_changes', {})), len(rep.get('texture_errors', []))))
             json.dump(report, open(rp, 'w'), indent=1)
     json.dump(report, open(rp, 'w'), indent=1)
+    seen = {}
+    for r in report.values():
+        for k, v in r.get('inline_samplers', {}).items():
+            seen[k] = seen.get(k, 0) + v
+    log('inline sampler flags seen (flags: uses):', seen)
     shutil.rmtree(work_dir, ignore_errors=True)
     errors = sum(len(r.get('texture_errors', [])) + ('error' in r) for r in report.values())
     log('finished in %.0fs, data is %.2f GB, %d problems (see %s)' % (time.time() - t0, tree_size(out_data) / 2 ** 30, errors, rp))

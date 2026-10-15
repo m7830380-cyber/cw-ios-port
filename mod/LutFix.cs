@@ -10,19 +10,20 @@ using UnityEngine.Rendering.Universal;
 namespace CWIOS
 {
     /// <summary>
-    /// Colour grading came out tinted on iOS (purple/green) while the image without post-processing looks right, so
-    /// the colour grading LUT is suspect. This rebuilds the same LUT on the CPU with URP's LutBuilderLdr maths (same
-    /// parameters, read back from the LUT builder material right after URP sets them) and, in Cpu mode, copies it over
-    /// the GPU-built one every frame. Post-processing stays fully on - only the 1024x32 table is replaced.
-    /// Diagnostics: once per scene the GPU-built LUT is read back and compared with the CPU one ("LUT check:" lines),
-    /// and PurpleProbe compares each mode against a prediction made from the no-post image and keeps the best.
+    /// Colour grading came out tinted on iOS (purple/green). Cause: the converted shaders sampled their inline
+    /// samplers (sampler_LinearClamp) with repeat wrapping, so URP's curve lookups at 1.0 wrapped to 0 and the
+    /// LUT builder wrote garbage wherever a channel reached full intensity. convert_shader.py now bakes inline
+    /// samplers in as constexpr samplers, so the GPU-built LUT is used again (Mode.Gpu, the default).
+    /// Safety net: once per scene the GPU LUT is read back and compared with a CPU port of URP's LutBuilderLdr
+    /// ("LUT check:" lines). If it is wrong, the CPU-built table (same parameters, read from the builder material)
+    /// is copied over it every frame for the rest of the session. Post-processing always stays on.
     /// </summary>
     public static class LutFix
     {
         public enum Mode { Gpu = 0, Cpu = 1, CpuFlipped = 2 }
 
-        const string Pref = "cwios_lut_mode";
-        public static Mode Current { get; private set; } = Mode.Cpu;
+        const string Pref = "cwios_lut_mode2";   // only set from the log viewer / probe
+        public static Mode Current { get; private set; } = Mode.Gpu;
         public static bool Decided { get; private set; }
         /// True when the LUT on the GPU this frame is what Current asks for.
         public static bool UpToDate { get; private set; }
@@ -45,6 +46,7 @@ namespace CWIOS
                     if (m >= 0 && m <= 2) { Current = (Mode)m; Decided = true; }
                 }
                 PlayerPrefs.DeleteKey("cwios_lut_flip");
+                PlayerPrefs.DeleteKey("cwios_lut_mode");   // picked by the old on-screen self-check
             }
             catch { }
             RenderPipelineManager.beginCameraRendering += OnBeginCamera;
@@ -352,10 +354,13 @@ namespace CWIOS
                 // Per-row green check: tells which way the GPU wrote the g axis.
                 int RowG(byte[] a, int row) { long s = 0; for (int x = 0; x < w; x++) s += a[(row * w + x) * 4 + 1]; return (int)(s / w); }
                 Log.Info($"LUT check: average green GPU row0={RowG(gpu, 0)} row{n - 1}={RowG(gpu, n - 1)}, CPU row0={RowG(straight, 0)} row{n - 1}={RowG(straight, n - 1)}");
-                if (!Decided && Math.Min(err[0], err[1]) < 2.0)
+                if (err[0] < 2.0)
+                    Log.Info("LUT check: OK - the GPU-built LUT matches URP's maths");
+                else if (!Decided && Current == Mode.Gpu)
                 {
-                    Log.Info("LUT check: the GPU-built LUT matches URP's maths - the LUT is not the problem");
-                    Set(err[0] <= err[1] ? Mode.Cpu : Mode.CpuFlipped, false);
+                    // Safety net: keep the picture right with the CPU table and say so loudly.
+                    Log.Error($"LUT check: the GPU-built LUT is wrong (mean error {err[0]:0.0}/255) - switching to the CPU-built LUT");
+                    Set(Mode.Cpu, false);
                 }
             }
             catch (Exception e) { Log.Warn("LUT check: " + e); }

@@ -184,6 +184,37 @@ def fix_msl(msl, is_vs):
     return msl
 
 
+# Unity inline sampler flags (sampler_LinearClamp etc.): filter in bits 0-1, wrap U/V/W in bits 2-7.
+INLINE_FILTER = {0: b'filter::nearest, mip_filter::nearest', 1: b'filter::linear, mip_filter::nearest',
+                 2: b'filter::linear, mip_filter::linear'}
+INLINE_SEEN = {}   # flags -> count, reported by convert_data
+INLINE_WRAP = {0: b'repeat', 1: b'clamp_to_edge', 2: b'mirrored_repeat', 3: b'mirrored_repeat'}
+
+
+def inline_samplers(msl, P):
+    """Bake HLSL inline samplers into the MSL as constexpr samplers, like Unity's own Metal compiler.
+    Unity's Metal runtime does not set up sampler states for a bound slot with no texture behind it,
+    so a bound inline sampler falls back to repeat wrapping (curves sampled at 1.0 wrap to 0)."""
+    pat = re.compile(rb'(,?)\s*\n\s*sampler sampler_inline(\d+) \[\[ sampler \((\d+)\) \]\](,?)')
+    decls = []
+
+    def sub(m):
+        s = next((x for x in P['samplers'] if x['bind'] == int(m.group(2))), None)
+        flags = s['sampler'] if s else None
+        INLINE_SEEN[flags] = INLINE_SEEN.get(flags, 0) + 1
+        if flags is None or flags >> 8 or (flags & 3) not in INLINE_FILTER:
+            return m.group(0)   # unknown (e.g. comparison sampler): leave it bound
+        w = [INLINE_WRAP[(flags >> sh) & 3] for sh in (2, 4, 6)]
+        decls.append(b'constexpr sampler sampler_inline%s(%s, s_address::%s, t_address::%s, r_address::%s);\n'
+                     % (m.group(2), INLINE_FILTER[flags & 3], w[0], w[1], w[2]))
+        return b',' if m.group(1) and m.group(4) else b''
+    out = pat.sub(sub, msl)
+    if not decls:
+        return msl
+    at = re.search(rb'\n(vertex|fragment|kernel) ', out)
+    return out[:at.start() + 1] + b''.join(decls) + out[at.start() + 1:]
+
+
 # ---------------- hlslcc batch ----------------
 class HlslccBatch:
     def __init__(self, workdir):
@@ -344,7 +375,7 @@ def convert_shader(tt, blob, workdir, log=print):
             log('  [%s] hlslcc failed%s' % (name, (': ' + str([d['msg'] for d in refl['refl'] if d['k'] == 'diag'])[:300]) if refl else ' (crash)'))
             continue
         try:
-            msl = fix_msl(msl, is_vs)
+            msl = inline_samplers(fix_msl(msl, is_vs), P)
             pseg = build_metal_params(refl, msl, P, {'VGlobals': '$Globals'} if is_vs else {'FGlobals': '$Globals'})
             smap, ch = vertex_channels(refl) if is_vs else (0, [])
             msub = dict(version=BLOB_VERSION, type=METAL_VS if is_vs else METAL_FS, stats=[0, 0, 0, 0],
