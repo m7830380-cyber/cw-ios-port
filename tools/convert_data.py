@@ -17,7 +17,7 @@ Resources/ is not produced: the iOS player brings its own "unity default resourc
 
 Everything produced here is derived from the game: never commit or upload it anywhere public.
 """
-import argparse, hashlib, json, os, pickle, re, shutil, sys, time, traceback
+import argparse, hashlib, json, os, pickle, re, shutil, subprocess, sys, time, traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -216,6 +216,16 @@ def tree_size(p):
     return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(p) for f in fs)
 
 
+def webm_to_mp4(src, dst):
+    """The iOS video player cannot play WebM (the bundled lost footage): re-encode to H.264 + AAC MP4."""
+    ff = shutil.which('ffmpeg')
+    if not ff:
+        raise SystemExit('ffmpeg is needed to convert %s (iOS cannot play WebM)' % src)
+    subprocess.run([ff, '-v', 'error', '-y', '-i', src, '-c:v', 'libx264', '-preset', 'slow', '-crf', '20',
+                    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', dst], check=True)
+    log('converted', os.path.basename(src), '->', os.path.basename(dst))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--game', default=DEFAULT_GAME)
@@ -250,7 +260,10 @@ def main():
                     bundles.append((src, os.path.join(raw, rel)))
             elif not only:
                 os.makedirs(os.path.dirname(os.path.join(raw, rel)), exist_ok=True)
-                shutil.copyfile(src, os.path.join(raw, rel))
+                if f.endswith('.webm'):
+                    webm_to_mp4(src, os.path.join(raw, rel[:-5] + '.mp4'))
+                else:
+                    shutil.copyfile(src, os.path.join(raw, rel))
     if not only:
         fix_catalog(raw)
 

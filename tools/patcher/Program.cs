@@ -10,7 +10,7 @@
 // All shipped assemblies:
 //  * libve (PlayEveryWare video encoder) is retargeted to "__Internal": CWVideoEncoder.mm implements it for iOS.
 //    It writes MP4 (H.264 + AAC; the iOS video player cannot play WebM), so in Assembly-CSharp and Zorro.Recorder
-//    every ".webm" file-name literal becomes ".mp4" (except the bundled lost-footage scan).
+//    every ".webm" file-name literal becomes ".mp4" (convert_data.py re-encodes the bundled lost footage).
 //  * Steamworks (steam_api64, sdkencryptedappticket64) P/Invokes become stubs returning zero / false / null,
 //    so any Steam call that slips through does nothing instead of throwing.
 //  * every other P/Invoke (Discord, Photon native sockets, desktop voice codecs, ...) becomes a stub that
@@ -850,14 +850,13 @@ static partial class Program
     // The Addressables bundles (localization) are converted for iOS, so their bytes no longer match the CRCs in
     // the binary catalog and Unity would refuse to load them: AssetBundleRequestOptions.Crc reads as 0 (= no check).
     // Clip files are MP4 on iOS: rename every literal ending in ".webm" (output.webm, fullRecording.webm, the
-    // ".webm" extensions of shared and exported videos). LostFootageDatabase scans StreamingAssets files and keeps
-    // its own extension.
+    // ".webm" extensions of shared and exported videos, and the bundled lost footage, which convert_data.py
+    // re-encodes to MP4).
     static int WebmToMp4(Ctx c)
     {
         int n = 0;
         foreach (var t in c.Mod.GetTypes())
         {
-            if (t.FullName.StartsWith("DefaultNamespace.LostFootageDatabase")) continue;
             foreach (var m in t.Methods)
             {
                 if (!m.HasBody) continue;
