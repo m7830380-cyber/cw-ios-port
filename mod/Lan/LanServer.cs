@@ -21,6 +21,7 @@ namespace CWIOS.Lan
     sealed class LanServer
     {
         public const int DefaultPort = 47778;
+        const byte KickEvent = 20;
 
         public int Port { get; private set; }
         /// Only this Photon user may create the game room (the host's own client); others can only join it.
@@ -499,6 +500,16 @@ namespace CWIOS.Lan
             byte cache = req.Byte(247, 0);
             var data = req.RawOf(245);
             var targets = req.Get(252) as int[];
+            // Content Warning: event 20 (actor number) is the host's "kick player", carried out by Landfall's
+            // server plugin on Photon Cloud
+            if (code == KickEvent && p.ActorNr == room.Master && data != null && Wire.Decode(data.Bytes) is int kick &&
+                kick != p.ActorNr && room.Actors.TryGetValue(kick, out var kicked))
+            {
+                Log.Info($"LAN host kicked '{kicked.NickName}' (actor {kick})");
+                kicked.Close();
+                RemovePeer(kicked);
+                return;
+            }
             switch (cache)
             {
                 case 6:   // RemoveFromRoomCache
