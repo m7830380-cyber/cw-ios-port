@@ -59,6 +59,7 @@ namespace CWIOS
                 go.AddComponent<DebugOverlay>();
                 go.AddComponent<Lifecycle>();
                 go.AddComponent<PurpleProbe>();
+                Lan.LanSession.Init(go);
                 if (OnDevice)
                 {
                     VInput.Virtual = true;

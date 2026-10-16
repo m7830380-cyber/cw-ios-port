@@ -547,6 +547,8 @@ static partial class Program
             n++;
         }
 
+        n += PatchLanHooks(c, mmh);
+
         // --- touch stick: analog movement from the on-screen stick ------------------------------------
         // Player.PlayerInput.SampeInput: movementInput = moveAction.action.ReadValue<Vector2>()  ->  VInput.TouchMove(...)
         var sample = Method(c, mod.GetType("Player/PlayerInput"), "SampeInput", 2);
@@ -570,6 +572,69 @@ static partial class Program
 
         // --- exported videos: Desktop -> Documents/Videos ----------------------------------------------
         n += RedirectStatic(c, "System.Environment", "GetFolderPath", "Paths", "GetFolderPath");
+        return n;
+    }
+
+    // Local (same Wi-Fi) multiplayer, driven by CWShim.Lan (filled in by CWIOS.Lan.LanSession):
+    //  * Host(int):          CWShim.Lan.BeforeHost();  (in-app server started, Photon pointed at it, offline mode off)
+    //  * JoinRoom(string):   if (CWShim.Lan.BeforeJoin(room)) return;  (Photon pointed at the host the code names)
+    //  * CheckRoomCode:      Utilities.CodeToRegion(code[0]) -> PhotonNetwork.CloudRegion (no cloud regions on a LAN:
+    //                        otherwise the join would switch "region" through the Photon name server)
+    //  * OnLobbyHosted:      the room name (= the code players type) comes from CWShim.Lan.RoomName(generated)
+    static int PatchLanHooks(Ctx c, TypeDefinition mmh)
+    {
+        int n = 0;
+        var host = Method(c, mmh, "Host", 1);
+        if (host != null)
+        {
+            var il = host.Body.GetILProcessor();
+            il.InsertBefore(host.Body.Instructions[0], il.Create(OpCodes.Call, c.ShimMethod("Lan", "BeforeHost")));
+            n++;
+        }
+
+        var join = Method(c, mmh, "JoinRoom", 1);
+        if (join != null)
+        {
+            var il = join.Body.GetILProcessor();
+            var first = join.Body.Instructions[0];
+            il.InsertBefore(first, il.Create(OpCodes.Ldarg_1));
+            il.InsertBefore(first, il.Create(OpCodes.Call, c.ShimMethod("Lan", "BeforeJoin", "System.String")));
+            il.InsertBefore(first, il.Create(OpCodes.Brfalse, first));
+            il.InsertBefore(first, il.Create(OpCodes.Ret));
+            n++;
+        }
+
+        var check = Method(c, mmh, "CheckRoomCode", 1);
+        if (check != null)
+        {
+            var calls = check.Body.Instructions.Where(i => i.OpCode == OpCodes.Call && i.Operand is MethodReference r &&
+                r.Name == "CodeToRegion" && r.DeclaringType.Name == "Utilities").ToList();
+            var cloudRegion = check.Module.GetTypes().SelectMany(t => t.Methods).SelectMany(m => m.HasBody ? m.Body.Instructions : Enumerable.Empty<Instruction>())
+                .Select(i => i.Operand as MethodReference).FirstOrDefault(r => r != null && r.Name == "get_CloudRegion" && r.DeclaringType.Name == "PhotonNetwork");
+            if (calls.Count == 0 || cloudRegion == null) c.Fail("CheckRoomCode: Utilities.CodeToRegion / PhotonNetwork.CloudRegion not found");
+            else
+                foreach (var call in calls)
+                {
+                    var il = check.Body.GetILProcessor();
+                    il.InsertBefore(call, il.Create(OpCodes.Pop));
+                    call.Operand = cloudRegion;
+                    n++;
+                }
+        }
+
+        var hosted = Method(c, mmh, "OnLobbyHosted", 2);
+        if (hosted != null)
+        {
+            var make = hosted.Body.Instructions.Where(i => i.OpCode == OpCodes.Call && i.Operand is MethodReference r &&
+                r.Name == "CreateRandomName" && r.DeclaringType.Name == "Utilities").ToList();
+            if (make.Count != 1) c.Fail($"OnLobbyHosted: expected 1 Utilities.CreateRandomName call, found {make.Count}");
+            else
+            {
+                var il = hosted.Body.GetILProcessor();
+                il.InsertAfter(make[0], il.Create(OpCodes.Call, c.ShimMethod("Lan", "RoomName", "System.String")));
+                n++;
+            }
+        }
         return n;
     }
 

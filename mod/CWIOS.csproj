@@ -20,6 +20,9 @@
     <Reference Include="PhotonUnityNetworking"><HintPath>$(GameAsmDir)\PhotonUnityNetworking.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="PhotonRealtime"><HintPath>$(GameAsmDir)\PhotonRealtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Photon3Unity3D"><HintPath>$(GameAsmDir)\Photon3Unity3D.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="ModalAssembly"><HintPath>$(GameAsmDir)\ModalAssembly.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Zorro.Core.Runtime"><HintPath>$(GameAsmDir)/Zorro.Core.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Zorro.UI.Runtime"><HintPath>$(GameAsmDir)\Zorro.UI.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Zorro.Settings.Runtime"><HintPath>$(GameAsmDir)/Zorro.Settings.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.RenderPipelines.Universal.Runtime"><HintPath>$(GameAsmDir)/Unity.RenderPipelines.Universal.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.RenderPipelines.Core.Runtime"><HintPath>$(GameAsmDir)/Unity.RenderPipelines.Core.Runtime.dll</HintPath><Private>false</Private></Reference>
