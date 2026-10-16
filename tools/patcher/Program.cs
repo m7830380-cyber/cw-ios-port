@@ -902,6 +902,7 @@ static partial class Program
         var gm = t.Methods.FirstOrDefault(x => x.Name == "GetMethodsWithAttribute" && x.Parameters.Count == 0);
         if (gm != null)
         {
+            gm.Body.SimplifyMacros(); // the inserted ldc must not leave short branches out of range
             var il = gm.Body.GetILProcessor();
             foreach (var ins in gm.Body.Instructions.ToList())
                 if (ins.OpCode == OpCodes.Callvirt && ins.Operand is MethodReference mr &&
@@ -914,6 +915,7 @@ static partial class Program
                     ins.Operand = withFlags;
                     n++;
                 }
+            gm.Body.OptimizeMacros();
         }
         return n;
     }
