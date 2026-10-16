@@ -1,9 +1,7 @@
 // Content Warning iOS native helpers, called from C# through DllImport("__Internal").
 //
 //  * CWCrash_*  a fatal signal appends "FATAL SIGNAL" + a native backtrace to Documents/ContentWarning-iOS.log.
-//  * CWVe_*     the game's video encoder library (PlayEveryWare "libve", Windows-only) for iOS. The patcher points
-//               NativeVeMethods at these. For now: the CPU check passes and encoding reports "not available";
-//               the AVFoundation encoder replaces these stubs later.
+//  (the libve video encoder, CWVe_*, is in CWVideoEncoder.mm)
 #import <Foundation/Foundation.h>
 #include <signal.h>
 #include <execinfo.h>
@@ -62,18 +60,3 @@ extern "C" void CWCrash_Install(const char *logPath)
     }
     NSLog(@"[CW-iOS] crash logger installed -> %s", logPath);
 }
-
-// ======================================================================================================
-// libve (PlayEveryWare.VideoEncoding.NativeVeMethods) - stubs until the AVFoundation encoder lands.
-// C# bools are marshalled as one byte (UnmanagedType.I1).
-// ======================================================================================================
-extern "C" bool CWVe_initialize(void *mountPointBuffer, uint32_t bufferSizeBytes) { return true; }
-extern "C" bool CWVe_cpu_has_required_simd_extensions() { return true; }
-extern "C" bool CWVe_initialize_encoding(void *config, void **handle) { if (handle) *handle = NULL; return false; }
-extern "C" bool CWVe_encode_video_frame_from_memory(void *handle, void *buffer, uint32_t rows, uint32_t rowBytes, int32_t flags) { return false; }
-extern "C" bool CWVe_encode_mono_audio_sample(void *handle, void *samples, uint32_t count) { return false; }
-extern "C" bool CWVe_encode_stereo_audio_sample(void *handle, void *samples, uint32_t count) { return false; }
-extern "C" bool CWVe_finalize(void *handle) { return false; }
-extern "C" bool CWVe_try_force_release(void *handle) { return true; }
-extern "C" bool CWVe_initialize_decoding(void *config, void *handle) { return false; }
-extern "C" bool CWVe_combine_webm_files(void *handle, void *array, int32_t length) { return false; }

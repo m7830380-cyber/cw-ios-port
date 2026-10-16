@@ -8,7 +8,9 @@
 //   + dumpil / types / memberrefs / calls / stackcheck / stubmethods (investigation helpers)
 //
 // All shipped assemblies:
-//  * libve (PlayEveryWare video encoder) is retargeted to "__Internal": CWNative.mm implements it for iOS.
+//  * libve (PlayEveryWare video encoder) is retargeted to "__Internal": CWVideoEncoder.mm implements it for iOS.
+//    It writes MP4 (H.264 + AAC; the iOS video player cannot play WebM), so in Assembly-CSharp and Zorro.Recorder
+//    every ".webm" file-name literal becomes ".mp4" (except the bundled lost-footage scan).
 //  * Steamworks (steam_api64, sdkencryptedappticket64) P/Invokes become stubs returning zero / false / null,
 //    so any Steam call that slips through does nothing instead of throwing.
 //  * every other P/Invoke (Discord, Photon native sockets, desktop voice codecs, ...) becomes a stub that
@@ -134,6 +136,7 @@ static partial class Program
             if (an == "Unity.Burst") n += Step("burst", PatchBurst(ctx));
             if (an == "Photon3Unity3D") n += Step("netguard", PatchPhotonConnect(ctx));
             if (an == "Unity.ResourceManager") n += Step("bundlecrc", PatchBundleCrc(ctx));
+            if (an == "Assembly-CSharp" || an == "Zorro.Recorder") n += Step("mp4", WebmToMp4(ctx));
             n += Step("pinvoke", RetargetPInvokes(ctx));
             n += Step("process", RedirectProcess(ctx));
             n += Step("cursor", RedirectCursor(ctx));
@@ -846,6 +849,29 @@ static partial class Program
     // ------------------------------------------------------------------------------------------
     // The Addressables bundles (localization) are converted for iOS, so their bytes no longer match the CRCs in
     // the binary catalog and Unity would refuse to load them: AssetBundleRequestOptions.Crc reads as 0 (= no check).
+    // Clip files are MP4 on iOS: rename every literal ending in ".webm" (output.webm, fullRecording.webm, the
+    // ".webm" extensions of shared and exported videos). LostFootageDatabase scans StreamingAssets files and keeps
+    // its own extension.
+    static int WebmToMp4(Ctx c)
+    {
+        int n = 0;
+        foreach (var t in c.Mod.GetTypes())
+        {
+            if (t.FullName.StartsWith("DefaultNamespace.LostFootageDatabase")) continue;
+            foreach (var m in t.Methods)
+            {
+                if (!m.HasBody) continue;
+                foreach (var ins in m.Body.Instructions)
+                    if (ins.OpCode == OpCodes.Ldstr && ins.Operand is string s && s.EndsWith(".webm", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ins.Operand = s.Substring(0, s.Length - 5) + ".mp4";
+                        n++;
+                    }
+            }
+        }
+        return n;
+    }
+
     static int PatchBundleCrc(Ctx c)
     {
         var t = c.Mod.GetType("UnityEngine.ResourceManagement.ResourceProviders.AssetBundleRequestOptions");
