@@ -30,6 +30,8 @@
 //  * SteamLobbyHandler works without Steam: HostMatch reports a hosted "lobby" at once, so the game's own
 //    offline (PhotonNetwork.OfflineMode) hosting path creates the room and loads the house.
 //  * the desktop "Desktop" folder for exported videos is Documents/Videos.
+// Zorro.Core.Runtime ReflectionUtility / Assembly-CSharp SettingsHandler: attribute scans only walk the game's
+//    assemblies (CWShim.GameAssemblies), keeping the first scene load inside the iOS launch watchdog.
 // Unity.Burst: Burst is reported disabled, so [BurstCompile] code runs as managed (IL2CPP) code.
 using Mono.Cecil;
 using Mono.Cecil.Cil;
@@ -137,6 +139,8 @@ static partial class Program
             if (an == "Photon3Unity3D") n += Step("netguard", PatchPhotonConnect(ctx));
             if (an == "Unity.ResourceManager") n += Step("bundlecrc", PatchBundleCrc(ctx));
             if (an == "Assembly-CSharp" || an == "Zorro.Recorder") n += Step("mp4", WebmToMp4(ctx));
+            if (an == "Zorro.Core.Runtime") n += Step("scan", LimitAssemblyScan(ctx, "Zorro.Core.ReflectionUtility"));
+            if (an == "Assembly-CSharp") n += Step("scan", LimitAssemblyScan(ctx, "SettingsHandler"));
             n += Step("pinvoke", RetargetPInvokes(ctx));
             n += Step("process", RedirectProcess(ctx));
             n += Step("cursor", RedirectCursor(ctx));
@@ -867,6 +871,49 @@ static partial class Program
                         n++;
                     }
             }
+        }
+        return n;
+    }
+
+    // ReflectionUtility (console commands at the first scene load) and SettingsHandler scan every type of every
+    // assembly; under IL2CPP that blows the iOS launch watchdog on older phones. CWShim.GameAssemblies keeps
+    // only the assemblies that can hold the game's attributes.
+    static int LimitAssemblyScan(Ctx c, string typeName)
+    {
+        var t = c.Mod.GetType(typeName);
+        if (t == null) { c.Fail("LimitAssemblyScan: no type " + typeName); return 0; }
+        var target = c.Mod.ImportReference(c.ShimMethod("GameAssemblies", "Get", "System.AppDomain"));
+        int n = 0;
+        foreach (var m in t.Methods.Concat(t.NestedTypes.SelectMany(x => x.Methods)))
+        {
+            if (!m.HasBody) continue;
+            foreach (var ins in m.Body.Instructions)
+                if ((ins.OpCode == OpCodes.Callvirt || ins.OpCode == OpCodes.Call) && ins.Operand is MethodReference mr &&
+                    mr.DeclaringType.FullName == "System.AppDomain" && mr.Name == "GetAssemblies" && mr.Parameters.Count == 0)
+                {
+                    ins.OpCode = OpCodes.Call;
+                    ins.Operand = target;
+                    n++;
+                }
+        }
+        if (n == 0) c.Fail("LimitAssemblyScan: no GetAssemblies in " + typeName);
+        // Console commands are static methods: GetMethods() (every public instance method, inherited ones too, so
+        // ~150 per MonoBehaviour) becomes GetMethods(Public | Static | DeclaredOnly), which finds the same commands.
+        var gm = t.Methods.FirstOrDefault(x => x.Name == "GetMethodsWithAttribute" && x.Parameters.Count == 0);
+        if (gm != null)
+        {
+            var il = gm.Body.GetILProcessor();
+            foreach (var ins in gm.Body.Instructions.ToList())
+                if (ins.OpCode == OpCodes.Callvirt && ins.Operand is MethodReference mr &&
+                    mr.DeclaringType.FullName == "System.Type" && mr.Name == "GetMethods" && mr.Parameters.Count == 0)
+                {
+                    var flags = new TypeReference("System.Reflection", "BindingFlags", c.Mod, mr.DeclaringType.Scope, true);
+                    var withFlags = new MethodReference("GetMethods", mr.ReturnType, mr.DeclaringType) { HasThis = true };
+                    withFlags.Parameters.Add(new ParameterDefinition(flags));
+                    il.InsertBefore(ins, il.Create(OpCodes.Ldc_I4, 2 | 8 | 16));
+                    ins.Operand = withFlags;
+                    n++;
+                }
         }
         return n;
     }
