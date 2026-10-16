@@ -907,9 +907,9 @@ static partial class Program
                 if (ins.OpCode == OpCodes.Callvirt && ins.Operand is MethodReference mr &&
                     mr.DeclaringType.FullName == "System.Type" && mr.Name == "GetMethods" && mr.Parameters.Count == 0)
                 {
-                    var flags = new TypeReference("System.Reflection", "BindingFlags", c.Mod, mr.DeclaringType.Scope, true);
-                    var withFlags = new MethodReference("GetMethods", mr.ReturnType, mr.DeclaringType) { HasThis = true };
-                    withFlags.Parameters.Add(new ParameterDefinition(flags));
+                    var def = mr.DeclaringType.Resolve().Methods.First(x => x.Name == "GetMethods" && x.Parameters.Count == 1 &&
+                        x.Parameters[0].ParameterType.FullName == "System.Reflection.BindingFlags");
+                    var withFlags = c.Mod.ImportReference(def);
                     il.InsertBefore(ins, il.Create(OpCodes.Ldc_I4, 2 | 8 | 16));
                     ins.Operand = withFlags;
                     n++;
